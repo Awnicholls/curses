@@ -1,7 +1,6 @@
 import NiceModal from "@ebay/nice-modal-react";
 import { FC, FormEvent, memo, useEffect, useRef, useState } from "react";
 import { ToastContainer } from "react-toastify";
-import 'react-toastify/dist/ReactToastify.min.css';
 import { TextEventSource, TextEventType } from "@/types";
 import Sidebar                            from "./sidebar";
 import { AnimatePresence, motion } from "framer-motion";

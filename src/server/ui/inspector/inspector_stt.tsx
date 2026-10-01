@@ -1,11 +1,11 @@
 import { STT_Backends, STT_State } from "@/server/services/stt/schema";
 import { ServiceNetworkState } from "@/types";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import { FC } from "react";
 import { RiCharacterRecognitionFill, RiUserVoiceFill } from "react-icons/ri";
 import { SiGooglechrome, SiMicrosoftedge } from "react-icons/si";
 import { useSnapshot } from "valtio";
-import { azureLanguages, deepGramLangs, nativeLangs } from "../../services/stt/stt_data";
+import { azureLanguages, deepGramLangs, nativeLangs, openaiLanguages } from "../../services/stt/stt_data";
 import ServiceButton from "../service-button";
 import Inspector from "./components";
 import { InputCheckbox, InputMapObject, InputMappedGroupSelect, InputSelect, InputText, InputWebAudioInput } from "./components/input";
@@ -172,6 +172,28 @@ const Speechly: FC = () => {
   </>
 }
 
+const OpenAI: FC = () => {
+  const {t} = useTranslation();
+  const pr = useSnapshot(window.ApiServer.state.services.stt.data.openai);
+  const up = <K extends keyof STT_State["openai"]>(key: K, v: STT_State["openai"][K]) => window.ApiServer.state.services.stt.data.openai[key] = v;
+
+  return <>
+    <Inspector.SubHeader>{t('stt.openai_title')}</Inspector.SubHeader>
+    <InputText label="stt.openai_key" type="password" value={pr.key} onChange={e => up("key", e.target.value)} />
+    <InputWebAudioInput value={pr.device} onChange={e => up("device", e)} label="common.field_input_device"/>
+    <InputSelect options={[
+      { label: "Whisper (whisper-1)", value: "whisper-1" },
+      { label: "GPT Transcribe", value: "gpt-transcribe" },
+      { label: "GPT-4o Transcribe", value: "gpt-4o-transcribe" },
+      { label: "GPT-4o mini Transcribe", value: "gpt-4o-mini-transcribe" },
+    ]} label="stt.openai_model" value={pr.model} onValueChange={e => up("model", e)} />
+    <InputSelect options={openaiLanguages} label="common.field_language" value={pr.language} onValueChange={e => up("language", e)} />
+    <InputText label="stt.openai_prompt" value={pr.prompt} onChange={e => up("prompt", e.target.value)} />
+    <InputText type="number" step="50" label="stt.openai_pause" value={pr.pause} onChange={e => up("pause", e.target.value)} />
+    <Inspector.Description>{t('stt.openai_notice')}</Inspector.Description>
+  </>
+}
+
 const WordsReplacementModal: FC = () => {
   const {t} = useTranslation();
   const data = useSnapshot(window.ApiServer.state.services.stt);
@@ -219,13 +241,15 @@ const Inspector_STT: FC = () => {
           { label: "Browser", value: STT_Backends.browser },
           { label: "Azure", value: STT_Backends.azure },
           { label: "Deepgram", value: STT_Backends.deepgram },
-          { label: "Speechly", value: STT_Backends.speechly }
+          { label: "Speechly", value: STT_Backends.speechly },
+          { label: "OpenAI Whisper", value: STT_Backends.openai }
         ]} label="common.field_service" value={data.data.backend} onValueChange={e => up("backend", e as STT_Backends)} />
 
         {data.data.backend === STT_Backends.browser && <Browser />}
         {data.data.backend === STT_Backends.azure && <Azure />}
         {data.data.backend === STT_Backends.deepgram && <Deepgram />}
         {data.data.backend === STT_Backends.speechly && <Speechly />}
+        {data.data.backend === STT_Backends.openai && <OpenAI />}
         {data.data.backend === STT_Backends.native && <Native />}
       </Inspector.Deactivatable>
 

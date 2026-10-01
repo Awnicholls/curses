@@ -5,7 +5,7 @@ use tauri::{
     async_runtime::Mutex,
     command,
     plugin::{Builder, TauriPlugin},
-    Manager, Runtime, State,
+    Emitter, Manager, Runtime, State,
 };
 use tokio::sync::mpsc;
 use warp::Filter;
@@ -59,6 +59,17 @@ fn open_browser(data: OpenBrowserCommand) {
             .args(&["/C", format!("start {} {}", &data.browser, &data.url).as_str()])
             .output()
             .ok();
+    } else if cfg!(target_os = "macos") {
+        // map the Windows executable names the frontend sends to macOS app names
+        let app = match data.browser.as_str() {
+            "chrome" => "Google Chrome",
+            "msedge" => "Microsoft Edge",
+            other => other,
+        };
+        Command::new("open")
+            .args(&["-a", app, &data.url])
+            .output()
+            .ok();
     }
 }
 
@@ -67,7 +78,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
     let (pubsub_output_tx, mut pubsub_output_rx) = mpsc::channel::<String>(1); // to js
     Builder::new("web")
         .invoke_handler(tauri::generate_handler![open_browser, pubsub_broadcast, config])
-        .setup(|app| {
+        .setup(|app, _api| {
             app.manage(PubSubInput {
                 tx: Mutex::new(pubsub_input_tx),
             });
@@ -86,11 +97,11 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
                     warp::serve(routes.clone()).run(([0, 0, 0, 0], app_port)).await
                 }
             });
-            let handle = app.app_handle();
+            let handle = app.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     if let Some(output) = pubsub_output_rx.recv().await {
-                        handle.emit_all("pubsub", output).unwrap();
+                        handle.emit("pubsub", output).ok();
                     }
                 }
             });

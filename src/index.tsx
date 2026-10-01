@@ -25,8 +25,8 @@ declare module 'react' {
   }
 }
 
-// prevent rightclicks
-window.addEventListener('contextmenu', e => {
+// prevent rightclicks (allowed in dev so "Inspect" is available)
+import.meta.env.PROD && window.addEventListener('contextmenu', e => {
   const ele = e.target as HTMLElement;
   if (ele.nodeName !== "INPUT" && ele.nodeName !== "TEXTAREA") {
     e.preventDefault();
@@ -38,7 +38,23 @@ let root_ele = document.getElementById("root");
 if (!root_ele)
   throw Error("Root not found");
 
-const root = ReactDOM.createRoot(root_ele);
+// React 19 unmounts the whole app on an uncaught render error, leaving a blank
+// screen. Show the error instead so it can be diagnosed.
+function showFatalError(error: unknown, componentStack?: string) {
+  console.error(error);
+  const pre = document.createElement("pre");
+  pre.style.cssText = "position:fixed;inset:0;margin:0;padding:16px;overflow:auto;z-index:99999;background:#1d1d1d;color:#ff8080;font:12px/1.4 monospace;white-space:pre-wrap;user-select:text";
+  pre.textContent = "Curses crashed - please report this:\n\n" +
+    (error instanceof Error ? `${error.message}\n\n${error.stack ?? ""}` : String(error)) +
+    (componentStack ? `\n\nComponent stack:${componentStack}` : "");
+  document.body.appendChild(pre);
+}
+
+const root = ReactDOM.createRoot(root_ele, {
+  onUncaughtError: (error, info) => {
+    showFatalError(error, info.componentStack);
+  },
+});
 
 function renderView(view: ReactNode) {
   root && root.render(view);

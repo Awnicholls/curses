@@ -1,7 +1,7 @@
 import { TTS_Backends, TTS_State } from "@/server/services/tts/schema";
 import { ServiceNetworkState } from "@/types";
 import NiceModal from "@ebay/nice-modal-react";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import { FC, useEffect, useState } from "react";
 import { RiCharacterRecognitionFill, RiChatVoiceFill } from "react-icons/ri";
 import { proxy, useSnapshot } from "valtio";
@@ -26,7 +26,7 @@ const Windows: FC = () => {
   const [config, setConfig] = useState<WindowsConfig>();
 
   useEffect(() => {
-    invoke<WindowsConfig>("plugin:windows_tts|get_voices").then(setConfig);
+    invoke<WindowsConfig>("plugin:windows-tts|get_voices").then(setConfig);
   }, []);
 
   return <>
@@ -264,7 +264,7 @@ const UberDuck: FC = () => {
     if (!data.api_key || !data.secret_key)
       return;
     setLoadingVoices(true);
-    invoke("plugin:uberduck_tts|get_voices", {auth: {
+    invoke("plugin:uberduck-tts|get_voices", {auth: {
       api_key: data.api_key,
       secret_key: data.secret_key,
     }}).then(res => {

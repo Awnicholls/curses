@@ -1,6 +1,6 @@
-import { globalShortcut } from "@tauri-apps/api";
+import * as globalShortcut from "@tauri-apps/plugin-global-shortcut";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import hotkeys from "hotkeys-js";
 import uniqBy from "lodash/uniqBy";
 import { toast } from "react-toastify";
@@ -130,8 +130,10 @@ class Service_Keyboard implements IServiceInterface {
     await globalShortcut.unregisterAll();
     for (let k in window.ApiServer.state.shortcuts) {
       let key: ShortcutKeys = k as any;
-      window.ApiServer.state.shortcuts[key] !== "" && globalShortcut.register(window.ApiServer.state.shortcuts[key], k => {
-        this.processShortcut(key);
+      window.ApiServer.state.shortcuts[key] !== "" && globalShortcut.register(window.ApiServer.state.shortcuts[key], e => {
+        // Tauri 2 fires on both press and release
+        if (e.state === "Pressed")
+          this.processShortcut(key);
       }).catch(err => {
         toast.error(`Invalid shortkey ${window.ApiServer.state.shortcuts[key]}`);
         window.ApiServer.state.shortcuts[key] = ""
