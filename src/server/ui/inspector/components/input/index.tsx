@@ -21,7 +21,7 @@ import styles           from "./style.module.css";
 import produce          from "immer";
 import { BackendState } from "../../../../schema";
 import Tooltip          from "../../../dropdown/Tooltip";
-import { invoke }       from "@tauri-apps/api/tauri";
+import { invoke }       from "@tauri-apps/api/core";
 const cx = classNames.bind(styles);
 import { useTranslation } from 'react-i18next';
 
@@ -164,11 +164,25 @@ export type InputSelectOption = { label: string; value: string };
 interface NewNewSelectProps extends InputBaseProps, RadixSelect.SelectProps {
   options: (InputSelectOption | {label: string, options: InputSelectOption[]})[];
 }
-export const InputSelect: FC<NewNewSelectProps> = ({ options, ...props }) => {
+// Radix Select v2 throws if an item's value is "", so "" options (e.g. "None")
+// are mapped to a sentinel internally and back to "" for callers.
+const EMPTY_SELECT_VALUE = "__empty__";
+const toItemValue = (v: string) => v === "" ? EMPTY_SELECT_VALUE : v;
+const hasEmptyOption = (options: NewNewSelectProps["options"]) => options?.some(item =>
+  "options" in item ? item.options?.some(o => o.value === "") : item.value === "");
+
+export const InputSelect: FC<NewNewSelectProps> = ({ options, value, defaultValue, onValueChange, ...props }) => {
   const id = useId();
+  const emptyIsOption = hasEmptyOption(options);
+  const mapValue = (v?: string) => (v === "" && emptyIsOption) ? EMPTY_SELECT_VALUE : v;
   return (
     <InputContainer label={props.label} id={id}>
-      <RadixSelect.Root key={props.value} {...props}>
+      <RadixSelect.Root
+        key={value}
+        {...props}
+        value={mapValue(value)}
+        defaultValue={mapValue(defaultValue)}
+        onValueChange={v => onValueChange?.(v === EMPTY_SELECT_VALUE ? "" : v)}>
           <RadixSelect.Trigger className="input relative input-sm pr-4 truncate input-bordered field-width font-semibold text-start">
             <RadixSelect.Value placeholder="Select"/>
             <RadixSelect.Icon className="text-primary absolute right-1 self-center top-2">
@@ -185,13 +199,13 @@ export const InputSelect: FC<NewNewSelectProps> = ({ options, ...props }) => {
                 if ("options" in item) {
                   return <RadixSelect.Group key={item.label}>
                     <RadixSelect.Label className="p-2 text-sm font-semibold text-primary">{item.label}</RadixSelect.Label>
-                    {item.options?.map((item) => <SelectItem value={item.value} key={item.value}>
+                    {item.options?.map((item) => <SelectItem value={toItemValue(item.value)} key={item.value}>
                       {item.label}
                     </SelectItem>)}
                   </RadixSelect.Group>
                 }
                 else if ("value" in item) {
-                  return <SelectItem value={item.value} key={item.value}>
+                  return <SelectItem value={toItemValue(item.value)} key={item.value}>
                     {item.label}
                   </SelectItem>
                 }
@@ -586,7 +600,7 @@ interface AudioOutputProps extends InputBaseProps {
 export const InputNativeAudioOutput: FC<AudioOutputProps> = memo(({ label, value, onChange }) => {
   const [config, setConfig] = useState<WindowsConfig>();
   useEffect(() => {
-    invoke<WindowsConfig>("plugin:windows_tts|get_voices").then(setConfig);
+    invoke<WindowsConfig>("plugin:windows-tts|get_voices").then(setConfig);
   }, []);
 
   return <InputSelect

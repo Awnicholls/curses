@@ -6,19 +6,20 @@ authors = ["mmpneo@gmail.com"]
 license = ""
 repository = ""
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.90"
 
 [build-dependencies]
-tauri-build = { version = "1.4", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tauri = { version = "1.6", features = ["dialog-all", "fs-all", "global-shortcut-all", "shell-open", "window-all"] }
-tauri-plugin-window-state = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1" }
-window-shadows = "0.2.0"
-
-uwuify = "^0.2"
+tauri = { version = "2.12", features = [] }
+tauri-plugin-dialog = "2.8"
+tauri-plugin-fs = "2.6"
+tauri-plugin-global-shortcut = "2.4"
+tauri-plugin-process = "2.4"
+tauri-plugin-window-state = "2.5"
 
 itertools = "0.10.5"
 rosc = "0.9.1"
@@ -26,6 +27,17 @@ warp = "0.3.3"
 tokio = { version = "1.23.0", features = ["full"] }
 tokio-stream = "0.1.11"
 futures = "0.3.25"
+clap = { version = "4.4", features = ["derive"] }
+local-ip-address = "0.4.9"
+rodio = "^0.18"
+reqwest = {version = "0.11.15", features = ["json"] }
+
+# SIMD uwuifier, x86 only (see services/uwu.rs for the fallback)
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+uwuify = "^0.2"
+
+# Win32 APIs (SAPI TTS, keyboard hook, message box) - Windows only
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.44.0", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_System_Threading",
@@ -38,10 +50,6 @@ windows = { version = "0.44.0", features = [
   "Win32_System_Ole",
   "Win32_System_WindowsProgramming",
 ] }
-clap = { version = "4.4", features = ["derive"] }
-local-ip-address = "0.4.9"
-rodio = "^0.18"
-reqwest = {version = "0.11.15", features = ["json"] }
 
 [profile.release]
 lto = true
@@ -49,9 +57,7 @@ codegen-units = 1
 strip = true
 
 [features]
-default = ["custom-protocol"]
 background_input = []
-custom-protocol = ["tauri/custom-protocol"]
 
 [profile.dev.package."*"]
 opt-level = 3

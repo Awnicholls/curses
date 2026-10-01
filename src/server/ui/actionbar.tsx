@@ -1,5 +1,5 @@
-import { appWindow } from "@tauri-apps/api/window";
-import { exit } from '@tauri-apps/api/process';
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { exit } from '@tauri-apps/plugin-process';
 import classNames from "classnames";
 import { FC, HtmlHTMLAttributes, PropsWithChildren, ReactNode, useState } from "react";
 import { RiChatVoiceFill, RiFileListLine, RiMicFill, RiMicOffFill, RiPushpin2Fill, RiPushpinFill, RiStackFill, RiTranslate2, RiUserVoiceFill, RiVolumeMuteFill, RiVolumeUpFill } from "react-icons/ri";
@@ -9,7 +9,7 @@ import { useSnapshot }         from "valtio";
 import { ServiceNetworkState } from "../../types";
 import Tooltip                 from "./dropdown/Tooltip";
 import Logo                    from "./logo";
-import { invoke } from "@tauri-apps/api/tauri";
+import { invoke } from "@tauri-apps/api/core";
 import { SttMuteState } from "../services/stt/types";
 import { useTranslation } from "react-i18next";
 
@@ -129,16 +129,16 @@ const AppActions: FC = () => {
 
 const WindowActions: FC = () => {
   const {t} = useTranslation();
-  const handleMinimize = () => window.Config.isApp() && appWindow.minimize();
+  const handleMinimize = () => window.Config.isApp() && getCurrentWindow().minimize();
   const handleMaximize = async () => {
-    const state = await appWindow.isMaximized();
-    state ? appWindow.unmaximize() : appWindow.maximize();
+    const state = await getCurrentWindow().isMaximized();
+    state ? getCurrentWindow().unmaximize() : getCurrentWindow().maximize();
   };
 
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
 
   const handlePin = async () => {
-    await appWindow.setAlwaysOnTop(!alwaysOnTop)
+    await getCurrentWindow().setAlwaysOnTop(!alwaysOnTop)
     setAlwaysOnTop(!alwaysOnTop);
   }
 
