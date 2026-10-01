@@ -397,17 +397,24 @@
       let sttInstance = null
       let isStarted = false;
 
-      const ws = new WebSocket(`ws://${host}:${port}/pubsub?id=${Math.random()}-${Date.now()}`);
-      ws.onopen = () => console.log("opened");
-      ws.onmessage = (msg) => {
-        try {
-          const { topic, data } = JSON.parse(msg.data);
-          if (topic !== "inputfield.final" && topic !== "stt.final" || typeof data !== "string")
-            return;
-          addRowNode(data, topic);
+      // reconnect if the app restarts or the connection drops, otherwise
+      // recognised text would silently go nowhere
+      let ws;
+      function connect() {
+        ws = new WebSocket(`ws://${host}:${port}/pubsub?id=${Math.random()}-${Date.now()}`);
+        ws.onopen = () => console.log("opened");
+        ws.onclose = () => setTimeout(connect, 2000);
+        ws.onmessage = (msg) => {
+          try {
+            const { topic, data } = JSON.parse(msg.data);
+            if (topic !== "inputfield.final" && topic !== "stt.final" || typeof data !== "string")
+              return;
+            addRowNode(data, topic);
 
-        } catch (error) {}
+          } catch (error) {}
+        }
       }
+      connect();
       
 
       function addRowNode(value, event) {
@@ -445,7 +452,7 @@
       }
 
       function send(obj) {
-        (ws.OPEN === ws.readyState) && ws.send(JSON.stringify(obj));
+        ws && (ws.OPEN === ws.readyState) && ws.send(JSON.stringify(obj));
       }
 
       // throttle interim
@@ -458,55 +465,103 @@
       }
     
 
+      // Keep-alive: Chromium ends recognition sessions regularly (silence,
+      // network blips). Restart on a timer with backoff instead of calling
+      // start() inside onend, which can throw and leave it dead.
+      let failedRestarts = 0;
+      let restartTimer;
+
+      function destroyInstance() {
+        const instance = sttInstance;
+        sttInstance = undefined;
+        if (!instance) return;
+        instance.onstart = instance.onresult = instance.onerror = instance.onend = null;
+        try { instance.abort(); } catch (e) {}
+      }
+
+      function scheduleRestart(failed) {
+        if (!isStarted) return;
+        clearTimeout(restartTimer);
+        failedRestarts = failed ? failedRestarts + 1 : 0;
+        const delay = failedRestarts <= 1 ? 100 : Math.min(10000, 500 * 2 ** (failedRestarts - 2));
+        buttonStart.textContent = failed ? "Reconnecting..." : "Listening...";
+        restartTimer = setTimeout(spawnInstance, delay);
+      }
+
       async function spawnInstance() {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (!isStarted) return;
+        destroyInstance();
         let SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-        sttInstance = new SpeechRecognition();
-        sttInstance.continuous = true;
-        sttInstance.interimResults = true;
-        sttInstance.lang = selectDial.value;
-        sttInstance.start();
-        sttInstance.onstart = () => {
+        const instance = new SpeechRecognition();
+        sttInstance = instance;
+        instance.continuous = true;
+        instance.interimResults = true;
+        instance.lang = selectDial.value;
+        let lastError = "";
+        const sessionStart = Date.now();
+
+        instance.onstart = () => {
           buttonStart.textContent = "Listening..."
         }
-        isStarted = true;
-
-        sttInstance.onend = () => sttInstance && sttInstance.start();
-
-        sttInstance.onresult = (event) => {
+        instance.onend = () => {
+          if (instance !== sttInstance) return;
+          const failed = Date.now() - sessionStart < 2000 || (lastError && lastError !== "no-speech");
+          scheduleRestart(failed);
+        };
+        instance.onresult = (event) => {
+          if (instance !== sttInstance) return;
+          failedRestarts = 0;
           try {
             let interim_transcript = '';
-            let final_transcript = '';
             for (let i = event.resultIndex; i < event.results.length; ++i) {
+              const transcript = event.results[i][0].transcript;
               if (event.results[i].isFinal) {
-                final_transcript += event.results[i][0].transcript;
-                send({topic: "text.stt",data: {type: 0, value: final_transcript}});
-                addRowNode(final_transcript, 'stt.final');
+                send({topic: "text.stt",data: {type: 0, value: transcript}});
+                addRowNode(transcript, 'stt.final');
               }
               else {
-                interim_transcript += event.results[i][0].transcript;
-                sendInterimThrottle({topic: "text.stt",data: {type: 1, value: interim_transcript}})
+                interim_transcript += transcript;
               }
             }
+            if (interim_transcript)
+              sendInterimThrottle({topic: "text.stt",data: {type: 1, value: interim_transcript}})
           } catch (error) { }
         }
-        sttInstance.onerror = (e) => console.log(e);
+        instance.onerror = (e) => {
+          lastError = e.error;
+          console.log(e);
+          if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+            alert("Microphone or speech recognition access was denied.");
+            stopSTT();
+          }
+        };
 
-        window.onbeforeunload = () => {
-          sttInstance && sttInstance.stop();
+        try {
+          instance.start();
+        } catch (error) {
+          console.log(error);
+          scheduleRestart(true);
         }
       }
 
-      function startSTT() {
-        if (!isStarted)
+      function stopSTT() {
+        isStarted = false;
+        clearTimeout(restartTimer);
+        buttonStart.textContent = "Start"
+        destroyInstance();
+      }
+
+      window.onbeforeunload = () => destroyInstance();
+
+      async function startSTT() {
+        if (!isStarted) {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+          isStarted = true;
+          failedRestarts = 0;
           spawnInstance();
-        else if (sttInstance) {
-          isStarted = false;
-          buttonStart.textContent = "Start"
-          sttInstance.onend = null;
-          sttInstance.stop();
-          sttInstance = undefined;
         }
+        else
+          stopSTT();
       }
     })();
 

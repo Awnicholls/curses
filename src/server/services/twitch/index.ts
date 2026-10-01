@@ -11,6 +11,12 @@ import TwitchChatApi from "./chat";
 import TwitchEmotesApi from "./emotes";
 const scope = ["chat:read", "chat:edit", "channel:read:subscriptions"];
 
+const LIVE_CHECK_INTERVAL_MS = 30_000;
+// a stream counts as ended only after this many "not live" checks in a row,
+// so a single API blip doesn't fire "stream ended" (and stop speech-to-text)
+const OFFLINE_CHECKS_TO_END = 2;
+const EMOTE_REFRESH_INTERVAL_MS = 10 * 60_000;
+
 class Service_Twitch implements IServiceInterface {
   authProvider?: StaticAuthProvider;
   constructor() {}
@@ -18,7 +24,7 @@ class Service_Twitch implements IServiceInterface {
   emotes!: TwitchEmotesApi;
   chat!: TwitchChatApi;
 
-  liveCheckInterval?: any = null;
+  #offlineChecks = 0;
 
   apiClient?: ApiClient;
 
@@ -38,7 +44,9 @@ class Service_Twitch implements IServiceInterface {
     this.emotes = new TwitchEmotesApi();
     this.chat = new TwitchChatApi();
     // check live status
-    setInterval(() => this.#checkLive(), 4000);
+    setInterval(() => this.#checkLive(), LIVE_CHECK_INTERVAL_MS);
+    // pick up emotes added to the channel while the app is running
+    setInterval(() => this.refreshEmotes(), EMOTE_REFRESH_INTERVAL_MS);
 
     // login with token
     this.connect();
@@ -125,29 +133,44 @@ class Service_Twitch implements IServiceInterface {
     delete this.authProvider;
     this.emotes.dispose();
     this.state.user = null;
+    this.#offlineChecks = 0;
     this.state.liveStatus = ServiceNetworkState.disconnected;
   }
 
+  /** Reloads all emote sets. Resolves to the emote count (0 when logged out). */
+  refreshEmotes(): Promise<number> {
+    if (!this.state.user || !this.apiClient)
+      return Promise.resolve(0);
+    return this.emotes.loadEmotes(this.state.user.id, this.apiClient);
+  }
+
   async #checkLive() {
-    if (!this.state.user?.name) {
+    if (!this.state.user?.name || !this.apiClient) {
+      this.#offlineChecks = 0;
       this.state.liveStatus = ServiceNetworkState.disconnected;
       return;
     }
+    let isLive: boolean;
     try {
-      const resp = await this.apiClient?.streams.getStreamByUserName(
-        this.state.user.name
-      );
-      // window.ApiShared.pubsub.publishLocally({topic: "stream.on_started"});
-      const prevStatus = this.state.liveStatus;
-      this.state.liveStatus = !!resp
-        ? ServiceNetworkState.connected
-        : ServiceNetworkState.disconnected;
-      // stream ended
-      if (prevStatus === ServiceNetworkState.connected && this.state.liveStatus == ServiceNetworkState.disconnected) {
-        window.ApiShared.pubsub.publishLocally({topic: "stream.on_ended"});
-      }
+      isLive = !!(await this.apiClient.streams.getStreamByUserName(this.state.user.name));
     } catch (error) {
+      // network/API error: we don't know, so keep the current status
+      return;
+    }
+
+    if (isLive) {
+      this.#offlineChecks = 0;
+      this.state.liveStatus = ServiceNetworkState.connected;
+      return;
+    }
+
+    if (this.state.liveStatus !== ServiceNetworkState.connected)
+      return;
+    this.#offlineChecks++;
+    if (this.#offlineChecks >= OFFLINE_CHECKS_TO_END) {
+      this.#offlineChecks = 0;
       this.state.liveStatus = ServiceNetworkState.disconnected;
+      window.ApiShared.pubsub.publishLocally({topic: "stream.on_ended"});
     }
   }
 

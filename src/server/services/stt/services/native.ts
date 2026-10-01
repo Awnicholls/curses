@@ -1,62 +1,189 @@
 import { isEmptyValue } from "@/utils";
+import { toast } from "react-toastify";
 import { STT_State } from "../schema";
 import {
   ISTTReceiver,
   ISTTService
 } from "../types";
 
+// Errors that won't fix themselves by restarting - stop and tell the user.
+const FATAL_ERRORS = new Set(["not-allowed", "service-not-allowed", "language-not-supported", "bad-grammar"]);
+// Warn the user after this many failed restarts in a row (it keeps retrying).
+const WARN_AFTER_FAILED_RESTARTS = 10;
+// Recycle a session that has produced nothing for this long. Chromium sessions
+// can silently stop delivering results (e.g. after a network blip) without
+// firing "end"; restarting during silence loses nothing.
+const IDLE_RECYCLE_MS = 120_000;
+// Also recycle very long sessions so the results list doesn't grow forever.
+const MAX_SESSION_MS = 10 * 60_000;
+
 export class STT_NativeService implements ISTTService {
   constructor(private bindings: ISTTReceiver) {}
-  
+
   #instance?: SpeechRecognition;
-  
-  dispose(): void {}
-  
-  #processResults = (event: any) => {
-    let interim_transcript = "";
-    let final_transcript = "";
+  #running = false;
+  #started = false;            // onStart reported to the app
+  #failedRestarts = 0;
+  #restartTimer?: ReturnType<typeof setTimeout>;
+  #watchdog?: ReturnType<typeof setInterval>;
+  #lastActivity = 0;
+  #sessionStart = 0;
+  #pendingInterim = "";
+  #lastError = "";
+  #lang = "";
+
+  dispose(): void {
+    this.stop();
+  }
+
+  #processResults = (event: SpeechRecognitionEvent) => {
+    this.#lastActivity = Date.now();
+    this.#failedRestarts = 0;
+    let interim = "";
     for (let i = event.resultIndex; i < event.results.length; ++i) {
-      if (event.results[i].isFinal) {
-        final_transcript += event.results[i][0].transcript;
-        this.bindings.onFinal(final_transcript);
+      const result = event.results[i];
+      if (result.isFinal) {
+        // send each final result once (not concatenated with earlier ones)
+        this.#pendingInterim = "";
+        this.bindings.onFinal(result[0].transcript);
       } else {
-        interim_transcript += event.results[i][0].transcript;
-        this.bindings.onInterim(interim_transcript);
+        interim += result[0].transcript;
       }
     }
+    if (interim) {
+      this.#pendingInterim = interim;
+      this.bindings.onInterim(interim);
+    }
   };
-  
+
   start(state: STT_State): void {
     if (Object.values(state.native).some(isEmptyValue))
       return this.bindings.onStop("Options missing");
 
     const sp = window.webkitSpeechRecognition || window.SpeechRecognition;
+    if (!sp)
+      return this.bindings.onStop("Speech recognition is not supported here");
 
-    this.#instance = new sp();
-    this.#instance.lang = state.native.language;
-    this.#instance.continuous = true;
-    this.#instance.interimResults = true;
+    this.#lang = state.native.language;
+    this.#running = true;
+    this.#failedRestarts = 0;
+    this.#spawn();
 
-    this.#instance.onstart = () => this.bindings.onStart();
-    this.#instance.onresult = (event: any) => this.#processResults(event);
-    
-    this.#instance.addEventListener("error", (error) => {
-      // listener for active connection
-      if (error.error === "no-speech")
-        return;
-      this.stop(error.error);
-    });
-    this.#instance.onend = (e: any) => this.#instance?.start(); // keep alive
-    this.#instance.start();
-
-    window.onbeforeunload = () => this.#instance?.stop();
+    this.#watchdog = setInterval(() => this.#checkHealth(), 10_000);
+    window.addEventListener("beforeunload", this.#handleUnload);
   }
 
   stop(error?: string): void {
-    if (!this.#instance)
+    if (!this.#running)
       return;
-    this.#instance.onend = null;
-    this.#instance.stop();
+    this.#running = false;
+    clearTimeout(this.#restartTimer);
+    clearInterval(this.#watchdog);
+    window.removeEventListener("beforeunload", this.#handleUnload);
+    this.#flushInterim();
+    this.#destroyInstance();
     this.bindings.onStop(error);
+  }
+
+  #handleUnload = () => this.#destroyInstance();
+
+  // a fresh recognition object per session avoids reusing one Chromium has
+  // left in a bad state
+  #spawn() {
+    if (!this.#running)
+      return;
+    this.#destroyInstance();
+
+    const sp = window.webkitSpeechRecognition || window.SpeechRecognition;
+    const instance = new sp();
+    instance.lang = this.#lang;
+    instance.continuous = true;
+    instance.interimResults = true;
+
+    instance.onstart = () => {
+      if (instance !== this.#instance) return;
+      this.#sessionStart = this.#lastActivity = Date.now();
+      if (!this.#started) {
+        this.#started = true;
+        this.bindings.onStart();
+      }
+    };
+    instance.onresult = (event) => {
+      if (instance === this.#instance) this.#processResults(event);
+    };
+    instance.onspeechstart = () => {
+      if (instance === this.#instance) this.#lastActivity = Date.now();
+    };
+    instance.onerror = (event) => {
+      if (instance !== this.#instance) return; // late event from an old session
+      if (FATAL_ERRORS.has(event.error))
+        return this.stop(event.error);
+      // "no-speech", "aborted", "network", "audio-capture": restart from onend
+      this.#lastError = event.error;
+      if (event.error !== "no-speech")
+        console.warn("[Native STT]", event.error);
+    };
+    instance.onend = () => {
+      if (instance !== this.#instance) return;
+      this.#flushInterim();
+      // a session ending after silence is normal; one that errors or dies
+      // straight away is a failure and backs off
+      const quickDeath = Date.now() - this.#sessionStart < 2000;
+      const failed = quickDeath || (this.#lastError !== "" && this.#lastError !== "no-speech");
+      this.#scheduleRestart(failed);
+    };
+
+    this.#instance = instance;
+    this.#lastError = "";
+    this.#sessionStart = this.#lastActivity = Date.now();
+    try {
+      instance.start();
+    } catch (error) {
+      console.warn("[Native STT] start failed", error);
+      this.#scheduleRestart(true);
+    }
+  }
+
+  #scheduleRestart(failed: boolean) {
+    if (!this.#running)
+      return;
+    clearTimeout(this.#restartTimer);
+    this.#failedRestarts = failed ? this.#failedRestarts + 1 : 0;
+    if (this.#failedRestarts === WARN_AFTER_FAILED_RESTARTS)
+      toast.warn("Speech recognition keeps disconnecting - still retrying. Check your microphone and internet connection.");
+    // quick restart normally, back off when it keeps failing
+    const delay = this.#failedRestarts <= 1 ? 100 : Math.min(10_000, 500 * 2 ** (this.#failedRestarts - 2));
+    this.#restartTimer = setTimeout(() => this.#spawn(), delay);
+  }
+
+  #checkHealth() {
+    if (!this.#running || !this.#instance || this.#pendingInterim)
+      return;
+    const now = Date.now();
+    if (now - this.#lastActivity > IDLE_RECYCLE_MS || now - this.#sessionStart > MAX_SESSION_MS) {
+      // a recycle is not a failure
+      this.#failedRestarts = 0;
+      this.#spawn();
+    }
+  }
+
+  // if a session ends mid-sentence the interim text would otherwise be stuck on screen
+  #flushInterim() {
+    if (this.#pendingInterim) {
+      const text = this.#pendingInterim;
+      this.#pendingInterim = "";
+      this.bindings.onFinal(text);
+    }
+  }
+
+  #destroyInstance() {
+    const instance = this.#instance;
+    this.#instance = undefined;
+    if (!instance)
+      return;
+    instance.onstart = instance.onresult = instance.onspeechstart = instance.onerror = instance.onend = null;
+    try {
+      instance.abort();
+    } catch {}
   }
 }

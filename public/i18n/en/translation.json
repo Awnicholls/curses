@@ -204,6 +204,9 @@
     "section_emotes": "Emotes",
     "btn_show_emotes": "Show emotes",
     "btn_remap_emotes": "Remap emotes",
+    "btn_refresh_emotes": "Refresh emotes",
+    "btn_refreshing_emotes": "Refreshing...",
+    "toast_emotes_refreshed": "Loaded {{count}} emotes",
     "field_enable_captions_emotes": "Enable emotes in OBS captions",
     "field_case_sensitive": "Case sensitive"
   },

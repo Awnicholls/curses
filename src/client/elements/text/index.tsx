@@ -6,6 +6,41 @@ import { TextEvent, TextEventSource, TextEventType } from "../../../types";
 import { Element_TextState } from "./schema";
 import { buildStateStyle, elementStyle } from "./style";
 
+const PROFANITY_RE = /[^\s\.,?!]*\*+[^\s\.,?!]*/g;
+
+// captions come from speech, chat and the network - never trust them as HTML
+const escapeHtml = (value: string) => value
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
+const emoteHtml = (url: string) => `<img src="${escapeHtml(url)}" />`;
+
+// one word with masked profanity, everything else escaped
+function wordHtml(word: string, maskHtml: string) {
+  let out = "";
+  let last = 0;
+  for (const match of word.matchAll(PROFANITY_RE)) {
+    if (!match[0]) continue;
+    out += escapeHtml(word.slice(last, match.index)) + maskHtml;
+    last = (match.index ?? 0) + match[0].length;
+  }
+  return out + escapeHtml(word.slice(last));
+}
+
+// Emotes are keyed by the character index where their word starts (see
+// TwitchEmotesApi.scanForEmotes), so only whole words are replaced.
+function sentenceHtml(text: string, emotes: Record<number, string> | undefined, maskHtml: string) {
+  let cursor = 0;
+  return text.split(" ").map(word => {
+    const emote = emotes?.[cursor];
+    cursor += word.length + 1;
+    return emote ? emoteHtml(emote) : wordHtml(word, maskHtml);
+  }).join(" ");
+}
+
 type SentenceState = {
   type: TextEventType
   element: HTMLElement
@@ -152,7 +187,7 @@ class TextController {
       this.isPlayingAnimation = false;
       this.tryAnimateNextSentence();
       // add space in the end
-      sentence.element.innerHTML += " ";
+      sentence.element.insertAdjacentHTML("beforeend", " ");
       return;
     }
 
@@ -166,11 +201,11 @@ class TextController {
       const maskStr: string = this.currentState.textProfanityMask;
 
       if (this.currentState.animateDelayChar === 0) {
-        sentence.element.innerHTML += `<span class="profanity">${maskStr}</span>`; 
+        sentence.element.insertAdjacentHTML("beforeend", `<span class="profanity">${escapeHtml(maskStr)}</span>`);
         this.moveCursorToSpaceOrEnd(sentence);
       }
       else {
-        sentence.element.innerHTML += `<span class="profanity">${maskStr[sentence.cursorProfanity]}</span>`; 
+        sentence.element.insertAdjacentHTML("beforeend", `<span class="profanity">${escapeHtml(maskStr[sentence.cursorProfanity] ?? "")}</span>`);
   
         // finish mask stepping
         if (sentence.cursorProfanity +1 >= maskStr.length) {
@@ -183,8 +218,8 @@ class TextController {
       }
     }
     // insert emote
-    else if (sentence.cursor in sentence.emotes) {
-      sentence.element.innerHTML += `<img src=${sentence.emotes[sentence.cursor]} />`;
+    else if (sentence.emotes?.[sentence.cursor]) {
+      sentence.element.insertAdjacentHTML("beforeend", emoteHtml(sentence.emotes[sentence.cursor]));
       this.moveCursorToSpaceOrEnd(sentence);
     }
     // insert text
@@ -194,11 +229,11 @@ class TextController {
         // skip to next word
         const wordStart = sentence.cursor;
         this.moveCursorToSpaceOrEnd(sentence);
-        sentence.element.innerHTML += sentence.text.substring(wordStart, sentence.cursor);
+        sentence.element.insertAdjacentHTML("beforeend", escapeHtml(sentence.text.substring(wordStart, sentence.cursor)));
       }
       // animate single char
       else {
-        sentence.element.innerHTML += sentence.text[sentence.cursor];
+        sentence.element.insertAdjacentHTML("beforeend", escapeHtml(sentence.text[sentence.cursor]));
         sentence.cursor ++;
       }
     }
@@ -258,13 +293,8 @@ class TextController {
     else {
       const interimIndex = this.sentenceQueue.findIndex(s => s.type === TextEventType.interim); // todo cache index
       
-      let filteredText = event.value.replaceAll(/[^\s\.,?!]*\*+[^\s\.,?!]*/gi, `<span class="${event.type === TextEventType.interim ? 'interim' : ''} profanity">${this.currentState.textProfanityMask}</span>`);
-      for (let emoteKey in event.emotes) {
-        // ignore cursors
-        if (typeof emoteKey === "string") {          
-          filteredText = filteredText.replaceAll(emoteKey, `<img src="${event.emotes[emoteKey]}" />`)
-        }
-      }
+      const maskHtml = `<span class="${event.type === TextEventType.interim ? 'interim' : ''} profanity">${escapeHtml(this.currentState.textProfanityMask)}</span>`;
+      let filteredText = sentenceHtml(event.value, event.emotes, maskHtml);
 
       // add space
       filteredText += " ";
