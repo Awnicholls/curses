@@ -1,5 +1,6 @@
 import { Twitch_State } from "@/server/services/twitch/schema";
-import { FC } from "react";
+import { FC, useState } from "react";
+import { toast } from "react-toastify";
 import { SiTwitch } from "react-icons/si";
 import { useSnapshot } from "valtio";
 import Tooltip from "../dropdown/Tooltip";
@@ -13,7 +14,7 @@ const EmotesInspector: FC = () => {
   return <>
     <Inspector.SubHeader>Emotes ({Object.keys(window.ApiServer.twitch.emotes.dictionary).length})</Inspector.SubHeader>
     <div className="grid grid-cols-8 gap-1">
-      {Object.keys(window.ApiServer.twitch.emotes).map((k, i) =>
+      {Object.keys(window.ApiServer.twitch.emotes.dictionary).map((k, i) =>
         <Tooltip key={k} className="relative aspect-square" placement="top" content={k}>
           <img className="w-full h-full aspect-square object-contain" src={window.ApiServer.twitch.emotes.dictionary[k]} />
         </Tooltip>
@@ -67,6 +68,17 @@ const Inspector_Twitch: FC = () => {
   const handleLogout = () => window.ApiServer.twitch.logout();
   const handleShowEmotes = () => NiceModal.show('twitch-emotes');
   const handleShowEmotesMapper = () => NiceModal.show('twitch-emotes-map');
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefreshEmotes = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const count = await window.ApiServer.twitch.refreshEmotes();
+      toast.success(t('twitch.toast_emotes_refreshed', { count }));
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const pr = useSnapshot(window.ApiServer.state.services.twitch.data);
   const up = <K extends keyof Twitch_State>(key: K, v: Twitch_State[K]) => window.ApiServer.patchService("twitch", s => s.data[key] = v);
   return <Inspector.Body>
@@ -97,7 +109,7 @@ const Inspector_Twitch: FC = () => {
         </Inspector.Switchable>
         <Inspector.SubHeader>{t('twitch.section_emotes')}</Inspector.SubHeader>
         <span>
-          <span className="link link-accent link-hover font-semibold text-xs" onClick={handleShowEmotes}>{t('twitch.btn_show_emotes')}</span> | <span className="link link-accent link-hover font-semibold text-xs" onClick={handleShowEmotesMapper}>{t('twitch.btn_remap_emotes')}</span>
+          <span className="link link-accent link-hover font-semibold text-xs" onClick={handleShowEmotes}>{t('twitch.btn_show_emotes')}</span> | <span className="link link-accent link-hover font-semibold text-xs" onClick={handleShowEmotesMapper}>{t('twitch.btn_remap_emotes')}</span> | <span className="link link-accent link-hover font-semibold text-xs" onClick={handleRefreshEmotes}>{refreshing ? t('twitch.btn_refreshing_emotes') : t('twitch.btn_refresh_emotes')}</span>
         </span>
         <InputCheckbox label="twitch.field_enable_captions_emotes" value={pr.emotesEnableReplacements} onChange={e => up("emotesEnableReplacements", e)} />
         <InputCheckbox label="twitch.field_case_sensitive" value={pr.emotesCaseSensitive} onChange={e => up("emotesCaseSensitive", e)} />

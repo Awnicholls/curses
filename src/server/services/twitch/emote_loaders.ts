@@ -1,80 +1,86 @@
+// Third-party emote providers. Each loader returns { emoteName: imageUrl }.
+//
+// A channel that simply isn't on a provider returns {}. Network or server
+// errors throw, so a refresh can keep the previously loaded emotes instead of
+// wiping them.
+
+// some APIs return protocol-relative URLs ("//cdn..."), which break inside the
+// app (tauri:// origin) - always use https
+const absoluteUrl = (url: string) => url.startsWith("//") ? `https:${url}` : url;
+
+// null when the channel/user isn't registered with the provider
+async function fetchJson(url: string): Promise<any | null> {
+  const resp = await fetch(url);
+  if (resp.status === 404)
+    return null;
+  if (!resp.ok)
+    throw new Error(`${url}: HTTP ${resp.status}`);
+  return resp.json();
+}
 
 //region BTTV
-export async function Load_BTTV_GLOBAL() {
-  const emotes: Record<string, string>                     = {};
-  try {
-    const bttv_global                          = await fetch('https://api.betterttv.net/3/cached/emotes/global');
-    const json_bttv_global: any = await bttv_global.json();
-    for (let i = 0; i < json_bttv_global.length; i++)
-      emotes[json_bttv_global[i].code] = `https://cdn.betterttv.net/emote/${json_bttv_global[i].id}/1x`
-  } catch (error) {}
+function ParseBTTV(list: any[] | undefined, emotes: Record<string, string> = {}) {
+  for (const emote of list ?? []) {
+    if (emote?.code && emote?.id)
+      emotes[emote.code] = `https://cdn.betterttv.net/emote/${emote.id}/1x`;
+  }
   return emotes;
 }
 
+export async function Load_BTTV_GLOBAL() {
+  return ParseBTTV(await fetchJson('https://api.betterttv.net/3/cached/emotes/global'));
+}
+
 export async function Load_BTTV_CHANNEL(id: string) {
-  const emotes: Record<string, string>                       = {};
-  try {
-    const bttv_channel                           = await fetch(`https://api.betterttv.net/3/cached/users/twitch/${id}`);
-    const json_bttv_channel: any = await bttv_channel.json();
-    for (let i = 0; i < json_bttv_channel.channelEmotes.length; i++)
-      emotes[json_bttv_channel.channelEmotes[i].code] = `https://cdn.betterttv.net/emote/${json_bttv_channel.channelEmotes[i].id}/1x`
-    for (let i = 0; i < json_bttv_channel.sharedEmotes.length; i++)
-      emotes[json_bttv_channel.sharedEmotes[i].code] = `https://cdn.betterttv.net/emote/${json_bttv_channel.sharedEmotes[i].id}/1x`
-  } catch (error) {}
-  return emotes;
+  const data = await fetchJson(`https://api.betterttv.net/3/cached/users/twitch/${id}`);
+  return ParseBTTV(data?.sharedEmotes, ParseBTTV(data?.channelEmotes));
 }
 //endregion
 
 //region FFZ
 function ParseFFz(data: any) {
   const emotes: Record<string, string> = {};
-  try {
-    Object.keys(data.sets).forEach(set_key => {
-      for (let i = 0; i < data.sets[set_key].emoticons.length; i++) {
-        const emoticon        = data.sets[set_key].emoticons[i];
-        emotes[emoticon.name] = emoticon.urls["1"]
-      }
-    });
-  } catch (error) {}
+  for (const set of Object.values<any>(data?.sets ?? {})) {
+    for (const emoticon of set?.emoticons ?? []) {
+      const url = emoticon?.urls?.["2"] ?? emoticon?.urls?.["1"];
+      if (emoticon?.name && url)
+        emotes[emoticon.name] = absoluteUrl(url);
+    }
+  }
   return emotes;
 }
+
 export async function Load_FFZ_GLOBAL() {
-  const ffz_global                         = await fetch('https://api.frankerfacez.com/v1/set/global');
-  const json_ffz_global: any = await ffz_global.json();
-  return ParseFFz(json_ffz_global);
+  return ParseFFz(await fetchJson('https://api.frankerfacez.com/v1/set/global'));
 }
 
 export async function Load_FFZ_CHANNEL(id: string) {
-  const ffz_channel                          = await fetch(`https://api.frankerfacez.com/v1/room/id/${id}`);
-  const json_ffz_channel: any = await ffz_channel.json();
-  return ParseFFz(json_ffz_channel);
+  return ParseFFz(await fetchJson(`https://api.frankerfacez.com/v1/room/id/${id}`));
 }
 //endregion
 
 //region 7tv
-export async function Load_7TV_CHANNEL(id: string) {
-  
-  try {
-
-    const resp                          = await fetch(`https://7tv.io/v3/users/twitch/${id}`);
-    const r = await resp.json();
-    const emoteSet = r.emote_set;
-    return Object.fromEntries(emoteSet.emotes.map((emote: any) =>
-      [emote.name, `${emote.data.host.url}/${emote.data.host.files[1].name}`]
-    ))
-  } catch (error) {
-    return {}
+// pick a specific file instead of relying on the order of the files list
+const SEVENTV_FILE_PREFERENCE = ["2x.webp", "1x.webp", "2x.gif", "1x.gif"];
+function Parse7TV(list: any[] | undefined) {
+  const emotes: Record<string, string> = {};
+  for (const emote of list ?? []) {
+    const host = emote?.data?.host;
+    const files: { name: string }[] = host?.files ?? [];
+    const file = SEVENTV_FILE_PREFERENCE.map(n => files.find(f => f.name === n)).find(Boolean) ?? files[0];
+    if (emote?.name && host?.url && file)
+      emotes[emote.name] = absoluteUrl(`${host.url}/${file.name}`);
   }
+  return emotes;
 }
+
+export async function Load_7TV_CHANNEL(id: string) {
+  const data = await fetchJson(`https://7tv.io/v3/users/twitch/${id}`);
+  return Parse7TV(data?.emote_set?.emotes);
+}
+
 export async function Load_7TV_GLOBAL() {
-  try {
-    const resp                          = await fetch(`https://7tv.io/v3/emote-sets/global`);
-    const r = await resp.json();
-    return Object.fromEntries(r.emotes.map((emote: any) =>
-      [emote.name, `${emote.data.host.url}/${emote.data.host.files[1].name}`]
-    ));
-  } catch (error) {
-    return {}
-  }
+  const data = await fetchJson(`https://7tv.io/v3/emote-sets/global`);
+  return Parse7TV(data?.emotes);
 }
 //endregion
