@@ -94,7 +94,15 @@
     "azure_profanity_raw": "Raw",
     "azure_secondary_language": "Secondary language",
     "azure_use_secondary_language": "Enable secondary language",
-    "azure_silence_timeout": "Silence timeout"
+    "azure_silence_timeout": "Silence timeout",
+    "whisper_title": "Whisper (local)",
+    "whisper_model": "Model",
+    "whisper_download": "Download model",
+    "whisper_downloading": "Downloading",
+    "whisper_delete": "Delete downloaded model",
+    "whisper_prompt": "Context prompt",
+    "whisper_pause": "Pause length (ms)",
+    "whisper_notice": "Runs on this computer - no internet or API key needed after the model is downloaded. Text appears after each phrase (when you pause). Bigger models are more accurate but slower; English models are faster for English."
   },
   "tts": {
     "title": "Text to speech",

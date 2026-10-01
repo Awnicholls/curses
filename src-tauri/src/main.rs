@@ -105,6 +105,7 @@ fn main() {
         .plugin(services::uberduck_tts::init())
         .plugin(services::keyboard::init())
         .plugin(services::uwu::init())
+        .plugin(services::whisper::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

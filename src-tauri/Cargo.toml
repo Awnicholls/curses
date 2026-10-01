@@ -31,6 +31,12 @@ clap = { version = "4.4", features = ["derive"] }
 local-ip-address = "0.4.9"
 rodio = "^0.18"
 reqwest = {version = "0.11.15", features = ["json"] }
+# local speech-to-text (whisper.cpp). Building it needs CMake and Clang.
+whisper-rs = "0.16"
+
+# GPU acceleration on macOS
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
 
 # SIMD uwuifier, x86 only (see services/uwu.rs for the fallback)
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]

@@ -7,6 +7,7 @@ export enum STT_Backends {
   azure = "azure",
   deepgram = "deepgram",
   speechly = "speechly",
+  whisper = "whisper",
 }
 
 export const zodSTT_Backends = z.nativeEnum(STT_Backends);
@@ -49,6 +50,13 @@ export const Service_STT_Schema = z.object({
     punctuate: zSafe(z.coerce.boolean(), true),
     profanity: zSafe(z.coerce.boolean(), true),
     interim: zSafe(z.coerce.boolean(), true),
+  }).default({}),
+  whisper: z.object({
+    device: zSafe(z.coerce.string(), "default"),
+    model: zSafe(z.coerce.string(), "base"),
+    language: zSafe(z.coerce.string(), "auto"),
+    prompt: zSafe(z.coerce.string(), ""),
+    pause: zSafe(zStringNumber(), "700"),
   }).default({})
 }).default({});
 

@@ -8,7 +8,7 @@ import { STT_AzureService } from "./services/azure";
 import { STT_DeepgramService } from "./services/deepgram";
 import { STT_NativeService } from "./services/native";
 import { STT_SpeechlyService } from "./services/speechly";
-import { STT_OpenAIService } from "./services/openai";
+import { STT_WhisperService } from "./services/whisper";
 import {invoke} from "@tauri-apps/api/core";
 import {
   ISTTReceiver,
@@ -25,7 +25,7 @@ const backends: {
   [STT_Backends.azure]: STT_AzureService,
   [STT_Backends.deepgram]: STT_DeepgramService,
   [STT_Backends.speechly]: STT_SpeechlyService,
-  [STT_Backends.openai]: STT_OpenAIService
+  [STT_Backends.whisper]: STT_WhisperService
 };
 
 class Service_STT implements IServiceInterface, ISTTReceiver {
