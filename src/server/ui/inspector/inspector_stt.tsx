@@ -1,11 +1,12 @@
 import { STT_Backends, STT_State } from "@/server/services/stt/schema";
 import { ServiceNetworkState } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
-import { FC } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { FC, useEffect, useState } from "react";
 import { RiCharacterRecognitionFill, RiUserVoiceFill } from "react-icons/ri";
 import { SiGooglechrome, SiMicrosoftedge } from "react-icons/si";
 import { useSnapshot } from "valtio";
-import { azureLanguages, deepGramLangs, nativeLangs, openaiLanguages } from "../../services/stt/stt_data";
+import { azureLanguages, deepGramLangs, nativeLangs, whisperLanguages } from "../../services/stt/stt_data";
 import ServiceButton from "../service-button";
 import Inspector from "./components";
 import { InputCheckbox, InputMapObject, InputMappedGroupSelect, InputSelect, InputText, InputWebAudioInput } from "./components/input";
@@ -172,25 +173,71 @@ const Speechly: FC = () => {
   </>
 }
 
-const OpenAI: FC = () => {
+type WhisperModel = { id: string, label: string, size_mb: number, downloaded: boolean };
+
+const Whisper: FC = () => {
   const {t} = useTranslation();
-  const pr = useSnapshot(window.ApiServer.state.services.stt.data.openai);
-  const up = <K extends keyof STT_State["openai"]>(key: K, v: STT_State["openai"][K]) => window.ApiServer.state.services.stt.data.openai[key] = v;
+  const pr = useSnapshot(window.ApiServer.state.services.stt.data.whisper);
+  const up = <K extends keyof STT_State["whisper"]>(key: K, v: STT_State["whisper"][K]) => window.ApiServer.state.services.stt.data.whisper[key] = v;
+
+  const [models, setModels] = useState<WhisperModel[]>([]);
+  const [progress, setProgress] = useState<Record<string, number>>({});
+  const [error, setError] = useState("");
+
+  const refresh = () => invoke<WhisperModel[]>("plugin:whisper|list_models").then(setModels).catch(e => setError(String(e)));
+
+  useEffect(() => {
+    refresh();
+    const unlisten = listen<{ id: string, downloaded: number, total: number }>("whisper-download", e => {
+      const { id, downloaded, total } = e.payload;
+      setProgress(p => ({ ...p, [id]: total ? Math.round(downloaded / total * 100) : 0 }));
+    });
+    return () => { unlisten.then(f => f()); };
+  }, []);
+
+  const selected = models.find(m => m.id === pr.model);
+  const downloading = selected ? selected.id in progress : false;
+
+  const handleDownload = async () => {
+    if (!selected) return;
+    setError("");
+    setProgress(p => ({ ...p, [selected.id]: 0 }));
+    try {
+      await invoke("plugin:whisper|download_model", { id: selected.id });
+    } catch (e) {
+      setError(String(e));
+    }
+    setProgress(({ [selected.id]: _, ...rest }) => rest);
+    refresh();
+  };
+
+  const handleDelete = async () => {
+    if (!selected) return;
+    await invoke("plugin:whisper|delete_model", { id: selected.id }).catch(e => setError(String(e)));
+    refresh();
+  };
+
+  const formatSize = (mb: number) => mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
 
   return <>
-    <Inspector.SubHeader>{t('stt.openai_title')}</Inspector.SubHeader>
-    <InputText label="stt.openai_key" type="password" value={pr.key} onChange={e => up("key", e.target.value)} />
+    <Inspector.SubHeader>{t('stt.whisper_title')}</Inspector.SubHeader>
     <InputWebAudioInput value={pr.device} onChange={e => up("device", e)} label="common.field_input_device"/>
-    <InputSelect options={[
-      { label: "Whisper (whisper-1)", value: "whisper-1" },
-      { label: "GPT Transcribe", value: "gpt-transcribe" },
-      { label: "GPT-4o Transcribe", value: "gpt-4o-transcribe" },
-      { label: "GPT-4o mini Transcribe", value: "gpt-4o-mini-transcribe" },
-    ]} label="stt.openai_model" value={pr.model} onValueChange={e => up("model", e)} />
-    <InputSelect options={openaiLanguages} label="common.field_language" value={pr.language} onValueChange={e => up("language", e)} />
-    <InputText label="stt.openai_prompt" value={pr.prompt} onChange={e => up("prompt", e.target.value)} />
-    <InputText type="number" step="50" label="stt.openai_pause" value={pr.pause} onChange={e => up("pause", e.target.value)} />
-    <Inspector.Description>{t('stt.openai_notice')}</Inspector.Description>
+    <InputSelect
+      options={models.map(m => ({ label: `${m.downloaded ? "✓ " : ""}${m.label} · ${formatSize(m.size_mb)}`, value: m.id }))}
+      label="stt.whisper_model" value={pr.model} onValueChange={e => up("model", e)} />
+    {selected && !selected.downloaded && (
+      <button className="btn btn-sm btn-neutral" disabled={downloading} onClick={handleDownload}>
+        {downloading ? `${t('stt.whisper_downloading')} ${progress[selected.id]}%` : `${t('stt.whisper_download')} (${formatSize(selected.size_mb)})`}
+      </button>
+    )}
+    {selected?.downloaded && (
+      <span className="link link-error link-hover text-xs" onClick={handleDelete}>{t('stt.whisper_delete')}</span>
+    )}
+    {error && <span className="text-error text-xs">{error}</span>}
+    <InputSelect options={whisperLanguages} label="common.field_language" value={pr.language} onValueChange={e => up("language", e)} />
+    <InputText label="stt.whisper_prompt" value={pr.prompt} onChange={e => up("prompt", e.target.value)} />
+    <InputText type="number" step="50" label="stt.whisper_pause" value={pr.pause} onChange={e => up("pause", e.target.value)} />
+    <Inspector.Description>{t('stt.whisper_notice')}</Inspector.Description>
   </>
 }
 
@@ -242,14 +289,14 @@ const Inspector_STT: FC = () => {
           { label: "Azure", value: STT_Backends.azure },
           { label: "Deepgram", value: STT_Backends.deepgram },
           { label: "Speechly", value: STT_Backends.speechly },
-          { label: "OpenAI Whisper", value: STT_Backends.openai }
+          { label: "Whisper (local)", value: STT_Backends.whisper }
         ]} label="common.field_service" value={data.data.backend} onValueChange={e => up("backend", e as STT_Backends)} />
 
         {data.data.backend === STT_Backends.browser && <Browser />}
         {data.data.backend === STT_Backends.azure && <Azure />}
         {data.data.backend === STT_Backends.deepgram && <Deepgram />}
         {data.data.backend === STT_Backends.speechly && <Speechly />}
-        {data.data.backend === STT_Backends.openai && <OpenAI />}
+        {data.data.backend === STT_Backends.whisper && <Whisper />}
         {data.data.backend === STT_Backends.native && <Native />}
       </Inspector.Deactivatable>
 

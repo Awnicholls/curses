@@ -36,6 +36,7 @@
     "windows-tts:default",
     "uberduck-tts:default",
     "keyboard:default",
-    "uwu:default"
+    "uwu:default",
+    "whisper:default"
   ]
 }
