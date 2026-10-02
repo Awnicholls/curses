@@ -1,8 +1,9 @@
 //! Local speech-to-text with whisper.cpp (via whisper-rs).
 //!
-//! The frontend detects phrases (voice activity) and sends each phrase as raw
-//! 16 kHz mono f32 PCM. Models are ggml files downloaded on demand into the
-//! app data directory.
+//! The frontend detects phrases (voice activity) and sends audio as raw
+//! 16 kHz mono f32 PCM: repeatedly while a phrase is being spoken (live
+//! interim text) and once more when it ends (final text). Models are small
+//! English-only ggml files downloaded on demand into the app data directory.
 
 use std::{
     collections::HashSet,
@@ -18,30 +19,35 @@ use tauri::{
     AppHandle, Emitter, Manager, Runtime, State,
 };
 use tokio::io::AsyncWriteExt;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 const MODEL_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
+/// English-only models light enough for live transcription.
 /// (id, label, approximate download size in MB)
 const MODELS: &[(&str, &str, u32)] = &[
-    ("tiny.en", "Tiny (English)", 75),
-    ("tiny", "Tiny", 75),
-    ("base.en", "Base (English)", 142),
-    ("base", "Base", 142),
-    ("small.en", "Small (English)", 466),
-    ("small", "Small", 466),
-    ("medium.en", "Medium (English)", 1500),
-    ("medium", "Medium", 1500),
-    ("large-v3-turbo-q5_0", "Large v3 Turbo (compressed)", 547),
-    ("large-v3-turbo", "Large v3 Turbo", 1600),
+    ("tiny.en", "Tiny - fastest", 75),
+    ("base.en-q5_1", "Base, compressed - fast", 57),
+    ("base.en", "Base - recommended", 142),
+    ("small.en-q5_1", "Small, compressed - more accurate", 181),
+    ("small.en", "Small - most accurate, slower", 466),
 ];
 
 struct WhisperPlugin(Arc<Inner>);
 
+/// A loaded model plus a reusable inference state. Creating a state allocates
+/// large buffers, so it's done once per model rather than per phrase.
+struct LoadedModel {
+    id: String,
+    // keeps the model alive for the state (the state also holds a reference)
+    _ctx: Arc<WhisperContext>,
+    state: Arc<Mutex<WhisperState>>,
+}
+
 struct Inner {
     models_dir: PathBuf,
     /// currently loaded model, kept so it isn't reloaded for every phrase
-    loaded: Mutex<Option<(String, Arc<WhisperContext>)>>,
+    loaded: Mutex<Option<LoadedModel>>,
     downloading: Mutex<HashSet<String>>,
 }
 
@@ -53,11 +59,12 @@ impl Inner {
         Ok(self.models_dir.join(format!("ggml-{id}.bin")))
     }
 
-    fn context(&self, id: &str) -> Result<Arc<WhisperContext>, String> {
+    /// Returns the inference state for a model, loading the model if needed.
+    fn state(&self, id: &str) -> Result<Arc<Mutex<WhisperState>>, String> {
         let mut loaded = self.loaded.lock().map_err(|e| e.to_string())?;
-        if let Some((loaded_id, ctx)) = loaded.as_ref() {
-            if loaded_id == id {
-                return Ok(ctx.clone());
+        if let Some(model) = loaded.as_ref() {
+            if model.id == id {
+                return Ok(model.state.clone());
             }
         }
         // free the previous model before loading another one
@@ -67,11 +74,15 @@ impl Inner {
         if !path.exists() {
             return Err("Model is not downloaded".into());
         }
-        let ctx = WhisperContext::new_with_params(&path, WhisperContextParameters::default())
+        let mut params = WhisperContextParameters::default();
+        // faster attention, noticeably so on CPU
+        params.flash_attn(true);
+        let ctx = WhisperContext::new_with_params(&path, params)
             .map_err(|e| format!("Failed to load model: {e}"))?;
         let ctx = Arc::new(ctx);
-        *loaded = Some((id.to_string(), ctx.clone()));
-        Ok(ctx)
+        let state = Arc::new(Mutex::new(ctx.create_state().map_err(|e| e.to_string())?));
+        *loaded = Some(LoadedModel { id: id.to_string(), _ctx: ctx, state: state.clone() });
+        Ok(state)
     }
 }
 
@@ -155,7 +166,7 @@ async fn download<R: Runtime>(app: &AppHandle<R>, id: &str, path: &PathBuf) -> R
 fn delete_model(state: State<'_, WhisperPlugin>, id: String) -> Result<(), String> {
     let path = state.0.model_path(&id)?;
     if let Ok(mut loaded) = state.0.loaded.lock() {
-        if loaded.as_ref().is_some_and(|(loaded_id, _)| *loaded_id == id) {
+        if loaded.as_ref().is_some_and(|model| model.id == id) {
             *loaded = None;
         }
     }
@@ -165,11 +176,18 @@ fn delete_model(state: State<'_, WhisperPlugin>, id: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Loads a model ahead of time so the first phrase isn't delayed by it.
+#[command]
+async fn load_model(state: State<'_, WhisperPlugin>, id: String) -> Result<(), String> {
+    let inner = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || inner.state(&id).map(|_| ()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[derive(Deserialize)]
 struct TranscribeOptions {
     model: String,
-    #[serde(default)]
-    language: String,
     #[serde(default)]
     prompt: String,
 }
@@ -208,29 +226,32 @@ async fn transcribe(request: Request<'_>, state: State<'_, WhisperPlugin>) -> Re
     if samples.is_empty() {
         return Ok(String::new());
     }
-    // English-only models ignore other languages
-    let language = if options.model.ends_with(".en") {
-        "en".to_string()
-    } else if options.language.is_empty() {
-        "auto".to_string()
-    } else {
-        options.language.clone()
-    };
     let prompt = options.prompt.replace('\0', "");
 
     // loading the model and inference are CPU/GPU heavy - keep them off the async runtime
     let inner = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let ctx = inner.context(&options.model)?;
-        let mut wstate = ctx.create_state().map_err(|e| e.to_string())?;
+        let state = inner.state(&options.model)?;
+        let mut wstate = state.lock().map_err(|e| e.to_string())?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
-        params.set_n_threads(threads as i32);
-        params.set_language(Some(language.as_str()));
+        // roughly the physical core count: hyper-threads don't help whisper
+        let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        params.set_n_threads((logical / 2).clamp(2, 8) as i32);
+        // Whisper normally always encodes a 30 s window, even for a 2 s phrase.
+        // Shrinking the audio context to the phrase length (50 frames per second
+        // plus headroom) makes short phrases many times faster.
+        let seconds = samples.len() as f32 / 16_000.0;
+        params.set_audio_ctx(((seconds * 50.0).ceil() as i32 + 100).clamp(256, 1500));
+        params.set_language(Some("en"));
         if !prompt.trim().is_empty() {
             params.set_initial_prompt(&prompt);
         }
         params.set_no_context(true);
+        // speed matters for live text: one segment, no timestamps, and no
+        // temperature-fallback retries (which can stall for seconds)
+        params.set_single_segment(true);
+        params.set_no_timestamps(true);
+        params.set_temperature_inc(0.0);
         params.set_suppress_blank(true);
         params.set_print_special(false);
         params.set_print_progress(false);
@@ -250,7 +271,7 @@ async fn transcribe(request: Request<'_>, state: State<'_, WhisperPlugin>) -> Re
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("whisper")
-        .invoke_handler(tauri::generate_handler![list_models, download_model, delete_model, transcribe])
+        .invoke_handler(tauri::generate_handler![list_models, download_model, delete_model, load_model, transcribe])
         .setup(|app, _api| {
             // route whisper.cpp's console output into the (unused) log crate
             whisper_rs::install_logging_hooks();

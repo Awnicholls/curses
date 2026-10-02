@@ -20,7 +20,7 @@ fn main() {
             .plugin("uberduck-tts", inlined(&["speak", "get_voices"]))
             .plugin("keyboard", inlined(&["start_tracking", "stop_tracking"]))
             .plugin("uwu", inlined(&["translate"]))
-            .plugin("whisper", inlined(&["list_models", "download_model", "delete_model", "transcribe"])),
+            .plugin("whisper", inlined(&["list_models", "download_model", "delete_model", "load_model", "transcribe"])),
     )
     .expect("failed to run tauri-build");
 }

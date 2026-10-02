@@ -16,6 +16,11 @@ const WARN_AFTER_FAILED_RESTARTS = 10;
 const IDLE_RECYCLE_MS = 120_000;
 // Also recycle very long sessions so the results list doesn't grow forever.
 const MAX_SESSION_MS = 10 * 60_000;
+// Shown when the engine fails over and over without ever recognising anything
+// (e.g. macOS WebKit, or Windows with online speech recognition turned off).
+const NOT_AVAILABLE_MESSAGE = navigator.userAgent.includes("Mac")
+  ? "Native speech recognition isn't available in the app on macOS. Use Whisper (local) or Browser instead."
+  : "Native speech recognition couldn't connect. Check that \"Online speech recognition\" is on in Windows Settings > Privacy & security > Speech, or use Whisper (local) / Browser.";
 
 export class STT_NativeService implements ISTTService {
   constructor(private bindings: ISTTReceiver) {}
@@ -31,12 +36,15 @@ export class STT_NativeService implements ISTTService {
   #pendingInterim = "";
   #lastError = "";
   #lang = "";
+  #everResult = false;         // the engine has recognised anything at all
+
 
   dispose(): void {
     this.stop();
   }
 
   #processResults = (event: SpeechRecognitionEvent) => {
+    this.#everResult = true;
     this.#lastActivity = Date.now();
     this.#failedRestarts = 0;
     let interim = "";
@@ -56,17 +64,27 @@ export class STT_NativeService implements ISTTService {
     }
   };
 
-  start(state: STT_State): void {
+  async start(state: STT_State) {
     if (Object.values(state.native).some(isEmptyValue))
       return this.bindings.onStop("Options missing");
 
     const sp = window.webkitSpeechRecognition || window.SpeechRecognition;
     if (!sp)
-      return this.bindings.onStop("Speech recognition is not supported here");
+      return this.bindings.onStop(NOT_AVAILABLE_MESSAGE);
+
+    // ask for the microphone up front: the speech engine doesn't always
+    // trigger the permission prompt itself and then just hears nothing
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+    } catch (error) {
+      return this.bindings.onStop(`Microphone unavailable: ${(error as Error)?.message ?? error}`);
+    }
 
     this.#lang = state.native.language;
     this.#running = true;
     this.#failedRestarts = 0;
+    this.#everResult = false;
     this.#spawn();
 
     this.#watchdog = setInterval(() => this.#checkHealth(), 10_000);
@@ -121,7 +139,7 @@ export class STT_NativeService implements ISTTService {
       // "no-speech", "aborted", "network", "audio-capture": restart from onend
       this.#lastError = event.error;
       if (event.error !== "no-speech")
-        console.warn("[Native STT]", event.error);
+        console.warn("[Native STT]", event.error, event.message);
     };
     instance.onend = () => {
       if (instance !== this.#instance) return;
@@ -149,6 +167,10 @@ export class STT_NativeService implements ISTTService {
       return;
     clearTimeout(this.#restartTimer);
     this.#failedRestarts = failed ? this.#failedRestarts + 1 : 0;
+    // failing from the very start (e.g. WebView2 has no speech service and
+    // reports "network") means it will never work here
+    if (!this.#everResult && this.#failedRestarts >= 3 && this.#lastError && this.#lastError !== "no-speech")
+      return this.stop(NOT_AVAILABLE_MESSAGE);
     if (this.#failedRestarts === WARN_AFTER_FAILED_RESTARTS)
       toast.warn("Speech recognition keeps disconnecting - still retrying. Check your microphone and internet connection.");
     // quick restart normally, back off when it keeps failing

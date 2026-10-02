@@ -31,6 +31,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # bump when the whisper.cpp build flags below change, so it's rebuilt
+          key: ggml-avx2-v1
       - name: install deps
         run: yarn install --immutable
       - name: compile
@@ -38,6 +40,16 @@ jobs:
         env:
           CURSES_TWITCH_CLIENT_ID: ${{secrets.CURSES_TWITCH_CLIENT_ID}}
           CURSES_TWITCH_CLIENT_REDIRECT_LOCAL: ${{secrets.CURSES_TWITCH_CLIENT_REDIRECT_LOCAL}}
+          # whisper.cpp CPU build: don't tune for the CI machine's CPU (it may
+          # have AVX-512 that users' PCs don't); always use AVX2, which almost
+          # every PC from the last ~10 years supports and is much faster than
+          # the plain fallback
+          GGML_NATIVE: "OFF"
+          GGML_AVX: "ON"
+          GGML_AVX2: "ON"
+          GGML_FMA: "ON"
+          GGML_F16C: "ON"
+          GGML_BMI2: "ON"
 
       - name: create release
         uses: softprops/action-gh-release@v2

@@ -176,7 +176,8 @@ class Service_STT implements IServiceInterface, ISTTReceiver {
       value,
       type: TextEventType.interim,
     });
-    this.updateLastMessage(value, true);
+    // an empty interim just clears live text - nothing to cancel later
+    this.updateLastMessage(value, value !== "");
   }
 
   #setStatus(value: ServiceNetworkState) {

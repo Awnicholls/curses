@@ -2,18 +2,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { STT_State } from "../schema";
 import { ISTTReceiver, ISTTService } from "../types";
 
-// Local Whisper speech-to-text (whisper.cpp running in the Tauri backend).
+// Local Whisper speech-to-text (whisper.cpp running in the Tauri backend),
+// English only, with live text.
 //
-// Records the microphone, splits it into phrases with a simple energy-based
-// voice activity detector, and sends each phrase to the backend as 16 kHz mono
-// PCM. Each phrase produces one final result; there are no interim results.
+// The microphone is split into phrases with a simple energy-based voice
+// activity detector. While a phrase is being spoken, the audio so far is
+// re-transcribed every INTERIM_INTERVAL_MS and shown as interim (live) text.
+// When the speaker pauses, the whole phrase is transcribed once more and sent
+// as the final text.
 
 const TARGET_RATE = 16000;
-const PRE_ROLL_MS = 300;       // audio kept from before speech starts
-const MIN_SPEECH_MS = 300;     // shorter blips are ignored (reduces hallucinations)
-const MAX_PHRASE_MS = 15000;   // force a cut on long monologues
-const MIN_THRESHOLD = 0.01;    // RMS floor for "speech"
+const PRE_ROLL_MS = 300;          // audio kept from before speech starts
+const MIN_SPEECH_MS = 300;        // shorter blips are ignored (reduces hallucinations)
+const MAX_PHRASE_MS = 10000;      // long monologues are cut so live updates stay quick
+const MIN_THRESHOLD = 0.01;       // RMS floor for "speech"
 const PROMPT_CONTEXT_CHARS = 200;
+const INTERIM_INTERVAL_MS = 600;  // how often live text is refreshed
+const MIN_INTERIM_AUDIO_MS = 800; // don't guess from less audio than this
 
 // Text Whisper is known to invent on near-silent audio.
 const HALLUCINATIONS = [
@@ -32,6 +37,7 @@ export class STT_WhisperService implements ISTTService {
   #source?: MediaStreamAudioSourceNode;
   #processor?: ScriptProcessorNode;
   #running = false;
+  #sampleRate = 48000;
 
   // VAD state
   #preRoll: Float32Array[] = [];
@@ -42,8 +48,17 @@ export class STT_WhisperService implements ISTTService {
   #phraseMs = 0;
   #noiseFloor = 0.005;
 
-  // phrases are transcribed one at a time, in order
+  // phrase bookkeeping for live text
+  #phraseId = 0;          // increments when a new phrase starts
+  #finalizedId = 0;       // last phrase whose final text was queued
+  #lastInterimAt = 0;
+  #interimShown = false;  // live text currently on screen for the active phrase
+  #lastInterim = "";
+
+  // transcriptions run one at a time, in order (finals are never skipped;
+  // live updates are only started when nothing else is waiting)
   #queue: Promise<void> = Promise.resolve();
+  #pendingJobs = 0;
   #lastText = "";
 
   get state() {
@@ -63,6 +78,8 @@ export class STT_WhisperService implements ISTTService {
       const models = await invoke<{ id: string, downloaded: boolean }[]>("plugin:whisper|list_models");
       if (!models.find(m => m.id === model)?.downloaded)
         return this.bindings.onStop("[Whisper] Download the selected model first");
+      // load the model now so the first phrase isn't delayed by it
+      await invoke("plugin:whisper|load_model", { id: model });
     } catch (error) {
       return this.bindings.onStop(`[Whisper] ${error}`);
     }
@@ -77,6 +94,7 @@ export class STT_WhisperService implements ISTTService {
     }
 
     this.#context = new AudioContext();
+    this.#sampleRate = this.#context.sampleRate;
     this.#source = this.#context.createMediaStreamSource(this.#stream);
     this.#processor = this.#context.createScriptProcessor(4096, 1, 1);
     this.#processor.onaudioprocess = (e) => this.#process(e.inputBuffer);
@@ -140,11 +158,13 @@ export class STT_WhisperService implements ISTTService {
         this.#preRoll.shift();
       if (isSpeech) {
         this.#inSpeech = true;
+        this.#phraseId++;
         this.#phrase = [...this.#preRoll];
         this.#preRoll = [];
         this.#phraseMs = this.#phrase.length * chunkMs;
         this.#speechMs = chunkMs;
         this.#silenceMs = 0;
+        this.#lastInterimAt = Date.now();
       }
       return;
     }
@@ -161,33 +181,83 @@ export class STT_WhisperService implements ISTTService {
     if (this.#silenceMs >= pauseMs || this.#phraseMs >= MAX_PHRASE_MS) {
       const phrase = this.#phrase;
       const speechMs = this.#speechMs;
+      const id = this.#phraseId;
       this.#resetVad();
+      this.#finalizedId = id;
       if (speechMs >= MIN_SPEECH_MS)
-        this.#enqueue(phrase, buffer.sampleRate);
+        this.#enqueueFinal(phrase);
+      else
+        this.#clearInterim();
+      return;
     }
+
+    this.#maybeEnqueueInterim();
   }
 
-  #enqueue(chunks: Float32Array[], sampleRate: number) {
-    const samples = downsample(concat(chunks), sampleRate, TARGET_RATE);
-    this.#queue = this.#queue.then(async () => {
-      if (!this.#running)
+  #maybeEnqueueInterim() {
+    if (this.#pendingJobs > 0
+      || this.#phraseMs < MIN_INTERIM_AUDIO_MS
+      || this.#speechMs < MIN_SPEECH_MS
+      || Date.now() - this.#lastInterimAt < INTERIM_INTERVAL_MS)
+      return;
+    this.#lastInterimAt = Date.now();
+    const id = this.#phraseId;
+    const samples = downsample(concat(this.#phrase), this.#sampleRate, TARGET_RATE);
+    this.#run(async () => {
+      // the phrase may have finished while this was waiting
+      if (id <= this.#finalizedId)
         return;
       const text = await this.#transcribe(samples);
-      if (!this.#running || !text)
+      if (!this.#running || id <= this.#finalizedId || !text || text === this.#lastInterim)
         return;
+      this.#interimShown = true;
+      this.#lastInterim = text;
+      this.bindings.onInterim(text);
+    });
+  }
+
+  #enqueueFinal(chunks: Float32Array[]) {
+    const samples = downsample(concat(chunks), this.#sampleRate, TARGET_RATE);
+    this.#run(async () => {
+      const text = await this.#transcribe(samples);
+      if (!this.#running)
+        return;
+      if (!text) {
+        // nothing usable was said - remove any live text left on screen
+        this.#clearInterim();
+        return;
+      }
+      this.#interimShown = false;
+      this.#lastInterim = "";
       this.#lastText = text;
       this.bindings.onFinal(text);
     });
   }
 
+  #clearInterim() {
+    this.#lastInterim = "";
+    if (this.#interimShown) {
+      this.#interimShown = false;
+      this.bindings.onInterim("");
+    }
+  }
+
+  #run(job: () => Promise<void>) {
+    this.#pendingJobs++;
+    this.#queue = this.#queue
+      .then(() => this.#running ? job() : undefined)
+      .catch(error => console.warn("[Whisper]", error))
+      .finally(() => { this.#pendingJobs--; });
+  }
+
   async #transcribe(samples: Float32Array): Promise<string> {
-    const { model, language, prompt } = this.state;
+    const { model, prompt } = this.state;
     // previous text helps keep names/spelling consistent between phrases
     const context = [prompt.trim(), this.#lastText.slice(-PROMPT_CONTEXT_CHARS)].filter(Boolean).join(" ");
-    const options = { model, language: language === "auto" ? "" : language, prompt: context };
+    const options = { model, prompt: context };
 
     try {
-      const text = await invoke<string>("plugin:whisper|transcribe", packRequest(options, samples));
+      const text = (await invoke<string>("plugin:whisper|transcribe", packRequest(options, samples))).trim();
       return HALLUCINATIONS.some(r => r.test(text)) ? "" : text;
     } catch (error) {
       // model load failures won't fix themselves

@@ -18,7 +18,8 @@
         "height": 600,
         "resizable": true,
         "fullscreen": false,
-        "decorations": false
+        "decorations": false,
+        "useHttpsScheme": true
       }
     ],
     "security": {
