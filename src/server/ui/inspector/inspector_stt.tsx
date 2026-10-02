@@ -6,7 +6,7 @@ import { FC, useEffect, useState } from "react";
 import { RiCharacterRecognitionFill, RiUserVoiceFill } from "react-icons/ri";
 import { SiGooglechrome, SiMicrosoftedge } from "react-icons/si";
 import { useSnapshot } from "valtio";
-import { azureLanguages, deepGramLangs, nativeLangs, whisperLanguages } from "../../services/stt/stt_data";
+import { azureLanguages, deepGramLangs, nativeLangs } from "../../services/stt/stt_data";
 import ServiceButton from "../service-button";
 import Inspector from "./components";
 import { InputCheckbox, InputMapObject, InputMappedGroupSelect, InputSelect, InputText, InputWebAudioInput } from "./components/input";
@@ -224,7 +224,7 @@ const Whisper: FC = () => {
     <InputWebAudioInput value={pr.device} onChange={e => up("device", e)} label="common.field_input_device"/>
     <InputSelect
       options={models.map(m => ({ label: `${m.downloaded ? "✓ " : ""}${m.label} · ${formatSize(m.size_mb)}`, value: m.id }))}
-      label="stt.whisper_model" value={pr.model} onValueChange={e => up("model", e)} />
+      label="stt.whisper_model" value={pr.model} onValueChange={e => up("model", e as STT_State["whisper"]["model"])} />
     {selected && !selected.downloaded && (
       <button className="btn btn-sm btn-neutral" disabled={downloading} onClick={handleDownload}>
         {downloading ? `${t('stt.whisper_downloading')} ${progress[selected.id]}%` : `${t('stt.whisper_download')} (${formatSize(selected.size_mb)})`}
@@ -234,7 +234,6 @@ const Whisper: FC = () => {
       <span className="link link-error link-hover text-xs" onClick={handleDelete}>{t('stt.whisper_delete')}</span>
     )}
     {error && <span className="text-error text-xs">{error}</span>}
-    <InputSelect options={whisperLanguages} label="common.field_language" value={pr.language} onValueChange={e => up("language", e)} />
     <InputText label="stt.whisper_prompt" value={pr.prompt} onChange={e => up("prompt", e.target.value)} />
     <InputText type="number" step="50" label="stt.whisper_pause" value={pr.pause} onChange={e => up("pause", e.target.value)} />
     <Inspector.Description>{t('stt.whisper_notice')}</Inspector.Description>

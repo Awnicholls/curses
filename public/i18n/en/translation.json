@@ -102,7 +102,7 @@
     "whisper_delete": "Delete downloaded model",
     "whisper_prompt": "Context prompt",
     "whisper_pause": "Pause length (ms)",
-    "whisper_notice": "Runs on this computer - no internet or API key needed after the model is downloaded. Text appears after each phrase (when you pause). Bigger models are more accurate but slower; English models are faster for English."
+    "whisper_notice": "English only. Runs on this computer - no internet or API key needed once the model is downloaded. Text appears live while you speak and is finalised when you pause. Bigger models are more accurate but slower; if live text lags, pick a smaller one."
   },
   "tts": {
     "title": "Text to speech",

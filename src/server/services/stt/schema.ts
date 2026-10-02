@@ -53,8 +53,8 @@ export const Service_STT_Schema = z.object({
   }).default({}),
   whisper: z.object({
     device: zSafe(z.coerce.string(), "default"),
-    model: zSafe(z.coerce.string(), "base"),
-    language: zSafe(z.coerce.string(), "auto"),
+    // must match MODELS in src-tauri/src/services/whisper/mod.rs
+    model: zSafe(z.enum(["tiny.en", "base.en-q5_1", "base.en", "small.en-q5_1", "small.en"]), "base.en"),
     prompt: zSafe(z.coerce.string(), ""),
     pause: zSafe(zStringNumber(), "700"),
   }).default({})
