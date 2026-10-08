@@ -132,3 +132,4 @@ src/generated/prisma/**/*.map
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+/ARCHITECTURE.md
